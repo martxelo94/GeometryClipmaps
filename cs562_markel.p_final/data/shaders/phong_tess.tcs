@@ -1,0 +1,130 @@
+#version 420
+ 
+// Phong tess patch data
+struct PhongPatch
+{
+ float termIJ;
+ float termJK;
+ float termIK;
+ float d;
+};
+ 
+uniform float uTessLevels;
+uniform mat4 MV;
+uniform int adaptive;
+uniform int adaptiveColor;
+uniform float cam_far;
+uniform float cam_near;
+ 
+layout(vertices=3) out;
+ 
+layout(location = 1)   in vec3 iNormal[];
+layout(location = 2)   in vec2 iTexCoord[];
+ 
+layout(location=0) out vec3 oNormal[3];
+layout(location=3) out vec2 oTexCoord[3];
+layout(location = 6) out vec4 oColor[3];
+layout(location=9) out PhongPatch oPhongPatch[3];
+ 
+#define Pi  gl_in[0].gl_Position.xyz
+#define Pj  gl_in[1].gl_Position.xyz
+#define Pk  gl_in[2].gl_Position.xyz
+ 
+float PIi(int i, vec3 q)
+{
+ vec3 q_minus_p = q - gl_in[i].gl_Position.xyz;
+ return q[gl_InvocationID] - dot(q_minus_p, iNormal[i])
+                           * iNormal[i][gl_InvocationID];
+}
+
+vec4 color_gradients[5] = {
+	vec4(1,0,0,0),
+	vec4(1,1,0,0.3),
+	vec4(0,1,0,0.5),
+	vec4(0,1,1,0.7),
+	vec4(1,0,1,0.8)
+};
+
+vec4 pick_color(float d){
+	if(d < 0)
+		return vec4(1,1,1,1);
+	vec4 c = color_gradients[0];
+	for(int i = 1; i < 5; i++){
+		if(d < color_gradients[i].a)
+		break;
+		c = color_gradients[i];
+	}
+	c.a = 1.0;
+	return c;
+}
+
+vec2 tess_levels[4] = {
+	vec2(4.0, 0.0),
+	vec2(3.0, 0.15),
+	vec2(2.0, 0.3),
+	vec2(4.0, 0.5)
+};
+ 
+ float pick_tess_level(float angle){
+	float lvl = tess_levels[0].x;
+	for(int i = 1; i < 4; i++){
+		if(angle < tess_levels[i].y)
+			break;
+		lvl = tess_levels[i].x;
+	}
+	return lvl;
+ }
+
+void main()
+{
+ // get data
+ gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
+ oNormal[gl_InvocationID]   = iNormal[gl_InvocationID];
+ oTexCoord[gl_InvocationID] = iTexCoord[gl_InvocationID];
+ oColor[gl_InvocationID] = vec4(1,1,1,1);
+ 
+ // compute patch data
+ oPhongPatch[gl_InvocationID].termIJ = PIi(0,Pj) + PIi(1,Pi);
+ oPhongPatch[gl_InvocationID].termJK = PIi(1,Pk) + PIi(2,Pj);
+ oPhongPatch[gl_InvocationID].termIK = PIi(2,Pi) + PIi(0,Pk);
+
+ #if 1
+barrier();
+ if(adaptive == 1){
+	vec3 view = vec3(MV * -gl_in[gl_InvocationID].gl_Position);
+	float dist = sqrt(dot(view, view));
+	view = view / dist;
+
+	float ndc_dist = dist / (cam_far - cam_near);
+	
+	vec3 _normal = transpose(inverse(mat3(MV))) * iNormal[gl_InvocationID];
+	//vec3 _normal = mat3(MV) * iNormal[gl_InvocationID];
+	_normal = normalize(_normal);
+	
+	float angle_dot = dot(view, _normal);
+	float Di = (1.0 - abs(angle_dot)) * uTessLevels;
+	oPhongPatch[gl_InvocationID].d = Di;
+
+	if(adaptiveColor == 1)
+		oColor[gl_InvocationID] = pick_color(angle_dot);
+
+	int invocation1 = (gl_InvocationID + 1)%3;
+	int invocation2 = (gl_InvocationID + 2)%3;
+	float result = (oPhongPatch[invocation1].d + oPhongPatch[invocation2].d)/2.f;
+	result = clamp(result, 1, uTessLevels);
+	
+	gl_TessLevelOuter[gl_InvocationID] = result;
+
+	//gl_TessLevelOuter[gl_InvocationID] = uTessLevels;
+	gl_TessLevelInner[0] = uTessLevels * Di * 5.0;
+
+
+	return;
+ }
+#endif
+
+ 
+ // tesselate
+ gl_TessLevelOuter[gl_InvocationID] = uTessLevels;
+ gl_TessLevelInner[0] = uTessLevels;
+}
